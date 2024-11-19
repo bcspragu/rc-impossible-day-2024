@@ -7,12 +7,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Fails if .env file not found, not readable or invalid.
     dotenvy::dotenv()?;
 
-    let resp = register_event_queue().await?;
-    println!("Created event queue with ID {}", resp.queue_id);
+    let dm_handle = tokio::spawn(async move {
+        let resp = register_event_queue(ListenType::DM).await.unwrap();
+        println!("Created event queue with ID {}", resp.queue_id);
 
-    let resp = get_events(&resp.queue_id).await?;
-    println!("GOT SOME EVENTS!!!!");
-    println!("{:?}", resp.events);
+        let resp = get_events(&resp.queue_id).await.unwrap();
+        println!("GOT SOME DM EVENTS!!!!");
+        println!("{:?}", resp.events);
+    });
+
+    let mention_handle = tokio::spawn(async move {
+        let resp = register_event_queue(ListenType::Mention).await.unwrap();
+        println!("Created event queue with ID {}", resp.queue_id);
+
+        let resp = get_events(&resp.queue_id).await.unwrap();
+        println!("GOT SOME MENTIONED EVENTS!!!!");
+        println!("{:?}", resp.events);
+    });
+
+    futures::future::join_all([dm_handle, mention_handle]).await;
+
     Ok(())
 }
 
@@ -60,7 +74,14 @@ pub struct RegisterEventResponse {
     queue_id: String,
 }
 
-pub async fn register_event_queue() -> Result<RegisterEventResponse, reqwest::Error> {
+enum ListenType {
+    DM,
+    Mention,
+}
+
+pub async fn register_event_queue(
+    listen_type: ListenType,
+) -> Result<RegisterEventResponse, reqwest::Error> {
     let client = reqwest::Client::new();
     let response = client
         .post("https://recurse.zulipchat.com/api/v1/register")
@@ -71,7 +92,13 @@ pub async fn register_event_queue() -> Result<RegisterEventResponse, reqwest::Er
         .form(&[
             ("event_types", r#"["message"]"#),
             ("all_public_streams", "true"),
-            ("narrow", r#"[["is", "dm"]]"#),
+            (
+                "narrow",
+                match listen_type {
+                    ListenType::DM => r#"[["is", "dm"]]"#,
+                    ListenType::Mention => r#"[["is", "mentioned"]]"#,
+                },
+            ),
             ("include_subscribers", "false"),
         ])
         .send()
