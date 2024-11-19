@@ -1,6 +1,10 @@
 use std::env
 
-async fn register_event_queue() -> Result<(), reqwest::Error> {
+struct RegisterEventResponse {
+  queue_id: String
+}
+
+async fn register_event_queue() -> Result<RegisterEventResponse, reqwest::Error> {
     let client = reqwest::Client::new();
     let response = client.post("https://recurse.zulipchat.com/api/v1/register")
         .basic_auth("username", Some("password"))
@@ -12,9 +16,8 @@ async fn register_event_queue() -> Result<(), reqwest::Error> {
         ])
         .send()
         .await?;
-
-    let body = response.text().await?;
-    println!("{}", body);
-
+        .json::<RegisterEventResponse>()
+        .await?;
+    
     Ok(())
 }
