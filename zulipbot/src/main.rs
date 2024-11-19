@@ -1,5 +1,7 @@
 use serde::Deserialize;
 use std::env;
+use std::fs;
+use std::io;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -14,6 +16,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let resp = get_events(&resp.queue_id).await.unwrap();
         println!("GOT SOME DM EVENTS!!!!");
         println!("{:?}", resp.events);
+        // assume user dm's bot to make new blog
+        create_blog(resp.events);
     });
 
     let mention_handle = tokio::spawn(async move {
@@ -23,11 +27,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let resp = get_events(&resp.queue_id).await.unwrap();
         println!("GOT SOME MENTIONED EVENTS!!!!");
         println!("{:?}", resp.events);
+        // assume users mention post in checkins channel
+        add_post(resp.events);
     });
 
     futures::future::join_all([dm_handle, mention_handle]).await;
 
-    Ok(())
+    Ok()
+}
+
+fn create_blog(events: GetEventsResponse) -> Result<(), Box<dyn std::error::Error>> {
+    // create directory structure with fs:
+    // parse message to get relevant metadata of format: 
+    // SUBDOMAIN: ...
+    // BLOG_NAME: ...
+    // AUTHOR: ...
+
+    let root = env::var("USER_CONTENT_ROOT")
+
+    for event in events {
+      let uid = event.message.sender_id;
+      // parse message here, currently assuming metadata is in desired format
+      let metadata = event.message.content;
+
+      fs::create_dir("{}/user_content/{}", root, uid)?;
+      let mut f = fs::File::create_new("{}/user_content/{}/metadata", root, uid)?;
+      f.write_all(metadata.as_bytes())?;
+    }
+
+    Ok()
+}
+
+fn add_post(events: GetEventsResponse) -> Result<(), Box<dyn std::error::Error>> {
+    // assuming a blog is created, publish a post!
+    // in markdown at file: user_content/{sender_id}/{id}.md
+    // takes post_title from top of md file, demarcated by #
+
+    let root = env::var("USER_CONTENT_ROOT")
+
+    for event in events {
+      let uid = events.message.sender_id;
+      let mid = events.message.id
+      let blog = events.message.content
+      let mut f = fs::File::create_new("/user_content/{}/{}.md", uid, mid)?;
+      f.write_all(blog.as_bytes())?;
+    }
+
+    Ok()
 }
 
 #[derive(Debug, Deserialize)]
