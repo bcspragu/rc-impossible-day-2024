@@ -17,4 +17,5 @@ To build for production: `cargo build --release --target=x86_64-unknown-linux-mu
 
 - [ ] Figure out why posts are being received
   - Probably related to recent mucking around with heartbeats and stuff
+  - Generally make the logic match the Python SDK
 - [ ] Update the `homepage` with new instructions about metadata tags
