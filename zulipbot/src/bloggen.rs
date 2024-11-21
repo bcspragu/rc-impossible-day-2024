@@ -28,15 +28,13 @@ pub fn parse_metadata(md: &str) -> Result<HashMap<String, String>, Box<dyn std::
     Ok(m)
 }
 
-pub fn create_blog(metadata_msg: &str) -> Result<String, Box<dyn std::error::Error>> {
+pub fn create_blog(m: HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
     let tera = Tera::new(
         Path::new(&env::var("TEMPLATES_ROOT").unwrap())
             .join("*.toml")
             .to_str()
             .unwrap(),
     )?;
-
-    let m = parse_metadata(metadata_msg)?;
 
     println!("METADATA: {:?}", m);
 
@@ -77,7 +75,7 @@ pub fn create_blog(metadata_msg: &str) -> Result<String, Box<dyn std::error::Err
 
     run_zola(blog_dir, out_dir)?;
 
-    Ok(user_domain.to_string())
+    Ok(())
 }
 
 fn find_title<'a>(msg: &'a str) -> (Option<&'a str>, Option<usize>) {

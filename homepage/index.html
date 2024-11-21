@@ -16,13 +16,37 @@
       This is our RC Impossible Day 2024 project - a tool that turns Zulip messages directly into blog posts!.
     </p>
 
-    <h2>Usage</h2>
+    <h2>Creating a Blog</h2>
     <p>
-      Send a DM to <span class="pre">Blog Bot (HyperTXT)</span> that contains the blog name you'd like to have. This will appear at <span class="pre">&lt;username&gt;.hypertxt.io</span>.
+      Send a DM to <span class="pre">Blog Bot (HyperTXT)</span> that looks like the following:
     </p>
 
+    <pre>
+      SUBDOMAIN: yoursitename
+      BLOG_NAME: Witty Blog Name
+      AUTHOR: Your secret pseudonym or something
+    </pre>
+      
     <p>
-      Then, to publish something to your site, @-mention <span class="pre">Blog Bot (HyperTXT)</span> and that message will be pushed as a post to your site!
+      This will create your blog! It'll be available at <span class="pre">&lt;username&gt;.hypertxt.io</span>.
+    </p>
+
+    <h2>Publishing a Post</h2>
+
+    <p>
+      To publish something to your site, @-mention <span class="pre">Blog Bot (HyperTXT)</span> and that message will be pushed as a post to your site! Here's an example:
+    </p>
+
+    <pre>
+      @Blog Bot (HyperTXT)
+
+      TITLE: Title of my sparklingly brilliant post
+
+      Words! Things! Stuff! Trials and tribulations
+    </pre>
+
+    <p>
+      Adding a <span class="pre">TITLE: ...</span> is optional, and can also be specified by using a markdown header (e.g. <span class="pre"># My Title</span>). If you don't provide one, it'll default to today's date. Your post can contain all the usual Markdown shenanigans, including code + syntax highlighting.
     </p>
   </body>
 </html>

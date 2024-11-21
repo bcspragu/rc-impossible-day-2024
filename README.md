@@ -15,10 +15,10 @@ To build for production: `cargo build --release --target=x86_64-unknown-linux-mu
 
 ## TODO
 
-- [ ] Figure out why posts are being received
-  - Probably related to recent mucking around with heartbeats and stuff
-  - Generally make the logic match the Python SDK
-- [ ] Update the `homepage` with new instructions about metadata tags
-- [ ] Don't allow new users to take over existing domains :grimacing:
 - [ ] Allow users to overwrite blog config stuff (`config.toml` mostly, but other directory creation and whatnot shouldn't fail)
 - [ ] Test editing messages
+- [x] Figure out why posts aren't being received
+  - Probably related to recent mucking around with heartbeats and stuff
+  - Generally make the logic match the Python SDK
+- [x] Update the `homepage` with new instructions about metadata tags
+- [x] Don't allow new users to take over existing domains :grimacing:
