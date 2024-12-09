@@ -16,10 +16,16 @@ struct GetEventsResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct GetMessagesResponse {
+    messages: Option<Vec<Message>>
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Event {
     r#type: String,
     pub id: u64,
     pub message: Option<Message>,
+    pub message_id: Option<u64>
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,11 +49,11 @@ pub struct SendMessage {
     pub msg: String,
 }
 
-pub async fn call_on_each_message<F>(listen_type: ListenType, mut callback: F) -> Result<(), String>
+pub async fn call_on_each_message<F>(listen_type: ListenType, event_type: EventType, mut callback: F) -> Result<(), String>
 where
     F: FnMut(&Message) -> Option<SendMessage>,
 {
-    let queue_id = register_event_queue(listen_type).await.unwrap();
+    let queue_id = register_event_queue(listen_type, event_type).await.unwrap();
 
     let mut last_event_id = -1i64;
     loop {
@@ -65,10 +71,13 @@ where
             if ev.r#type == "heartbeat" {
                 continue;
             }
-            let msg = match &ev.message {
-                Some(msg) => msg,
-                None => {
-                    println!("message with type {} had no message", ev.r#type);
+            let msg = match &ev {
+                Event{message: Some(msg), .. } => msg,
+                Event{message_id: Some(message_id), .. } => {
+                    &get_message(*message_id).await?
+                }
+                _ => {
+                    println!("message with type {} had no message or message_id", ev.r#type);
                     continue;
                 }
             };
@@ -143,9 +152,26 @@ pub enum ListenType {
     Mention,
 }
 
+pub enum EventType {
+    Message,
+    UpdateMessage
+}
+
+impl EventType {
+    fn to_json(
+        &self
+    ) -> &str {
+        match self {
+            EventType::Message => r#"["message"]"#,
+            EventType::UpdateMessage => r#"["update_message"]"#
+        }
+    }
+}
+
 // Returns the queue ID
 async fn register_event_queue(
     listen_type: ListenType,
+    event_type: EventType
 ) -> Result<String, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let resp = client
@@ -155,7 +181,7 @@ async fn register_event_queue(
             Some(env::var("BOT_PASSWORD").unwrap_or_default()),
         )
         .form(&[
-            ("event_types", r#"["message"]"#),
+            ("event_types", event_type.to_json()),
             ("all_public_streams", "true"),
             (
                 "narrow",
@@ -200,6 +226,33 @@ async fn send_direct_message(msg: &str, user_id: u64) -> Result<(), String> {
         .map_err(|e| format!("failed to get send direct message: {:?}", e))?;
 
     Ok(())
+}
+
+async fn get_message(msg_id: u64) -> Result<Message, String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://recurse.zulipchat.com/api/v1/messages")
+        .basic_auth(
+            "hypertxt-bot@recurse.zulipchat.com",
+            Some(env::var("BOT_PASSWORD").unwrap_or_default()),
+        )
+        .query(&[("message_ids", format!("[{msg_id}]"))])
+        .send()
+        .await
+        .map_err(|e| format!("failed to get message: {:?}", e))?
+        .json::<GetMessagesResponse>()
+        .await
+        .map_err(|e| format!("failed to JSON format get messages response: {:?}", e))?;
+    
+    match response.messages {
+        Some(mut messages) => {
+            if messages.len() != 1 {
+                return Err("wrong number of messages".to_string())
+            }
+            Ok(messages.pop().unwrap())
+        },
+        None => return Err("no messages in response".to_string())
+    }
 }
 
 async fn send_message(msg: &str, topic: &str, channel_id: u64) -> Result<(), String> {

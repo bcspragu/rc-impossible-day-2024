@@ -1,7 +1,7 @@
 use redb::{Database, ReadableTable, TableDefinition};
 use std::env;
 use std::sync::Arc;
-use zulip::{ListenType, Message, SendMessage};
+use zulip::{ListenType, EventType, Message, SendMessage};
 
 mod bloggen;
 mod zulip;
@@ -16,9 +16,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Arc::new(Database::create(db_path)?);
     let dm_db = Arc::clone(&db);
     let mention_db = Arc::clone(&db);
+    let update_db = Arc::clone(&db);
 
     let dm_handle = tokio::spawn(async move {
-        zulip::call_on_each_message(ListenType::DM, |msg| {
+        zulip::call_on_each_message(ListenType::DM, EventType::Message, |msg| {
             let response_msg = match create_blog(&dm_db, &msg) {
                 Ok(subdomain) => &format!(
                     "Blog created successfully! You can access your beautiful new blog at https://{}.hypertxt.io",
@@ -37,10 +38,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let mention_handle = tokio::spawn(async move {
-        zulip::call_on_each_message(ListenType::Mention, |msg| {
+        zulip::call_on_each_message(ListenType::Mention, EventType::Message, |msg| {
             let response_msg = match add_post(&mention_db, &msg) {
                 Ok(subdomain) => &format!(
                     "Post published successfully! You can view it at https://{}.hypertxt.io",
+                    subdomain
+                ),
+                Err(e) => &format!("Uh oh, something went wrong. Error: {:?}", e),
+            };
+            println!("Response {}", response_msg);
+            if let Some(stream_id) = msg.stream_id {
+                return Some(SendMessage {
+                    msg_type: zulip::SendMessageType::Channel(msg.subject.clone(), stream_id),
+                    msg: response_msg.to_string(),
+                });
+            }
+            return None;
+        })
+        .await
+        .unwrap();
+    });
+
+    let update_handle = tokio::spawn(async move {
+        zulip::call_on_each_message(ListenType::Mention, EventType::UpdateMessage, |msg| {
+            let response_msg = match add_post(&update_db, &msg) {
+                Ok(subdomain) => &format!(
+                    "Post edited successfully! You can view it at https://{}.hypertxt.io",
                     subdomain
                 ),
                 Err(e) => &format!("Uh oh, something went wrong. Error: {:?}", e),
