@@ -61,7 +61,7 @@ pub fn create_blog(m: HashMap<String, String>) -> Result<(), Box<dyn std::error:
     fs::create_dir(blog_dir.join("templates")).ok();
 
     // Symlink in the theme content
-    let themes_root = path::absolute(&env::var("THEMES_ROOT").unwrap())?;
+    let themes_root = path::absolute(env::var("THEMES_ROOT").unwrap())?;
     std::os::unix::fs::symlink(themes_root, blog_dir.join("themes"))?;
 
     // Write the templated config file
@@ -78,15 +78,15 @@ pub fn create_blog(m: HashMap<String, String>) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-fn find_title<'a>(msg: &'a str) -> (Option<&'a str>, Option<usize>) {
+fn find_title(msg: &str) -> (Option<&str>, Option<usize>) {
     for (idx, line) in msg.lines().enumerate() {
         if let Some(title) = line.strip_prefix("# ") {
-            if title.len() > 0 {
+            if !title.is_empty() {
                 return (Some(title), Some(idx));
             }
         }
         if let Some(title) = line.strip_prefix("TITLE: ") {
-            if title.len() > 0 {
+            if !title.is_empty() {
                 return (Some(title), Some(idx));
             }
         }
@@ -126,7 +126,7 @@ pub fn add_post(
                 .fold(String::new(), |mut a, b| {
                     a.reserve(b.len() + 1);
                     a.push_str(b);
-                    a.push_str("\n");
+                    a.push('\n');
                     a
                 });
             val.trim().to_owned()

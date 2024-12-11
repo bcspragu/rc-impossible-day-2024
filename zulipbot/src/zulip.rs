@@ -128,8 +128,7 @@ async fn get_events(queue_id: &str, last_event_id: i64) -> Result<Vec<Event>, St
         return Err(format!(
             "got an error registering queue: {:?} {:?}",
             resp.msg, resp.code
-        )
-        .into());
+        ));
     }
 
     resp.events.ok_or_else(|| "no events in response".into())
@@ -213,7 +212,7 @@ async fn send_direct_message(msg: &str, user_id: u64) -> Result<(), String> {
     let client = reqwest::Client::new();
     let mut id = "[".to_string();
     id.push_str(&user_id.to_string());
-    id.push_str("]");
+    id.push(']');
     client
         .post("https://recurse.zulipchat.com/api/v1/messages")
         .basic_auth(
@@ -251,14 +250,14 @@ async fn get_message(msg_id: u64) -> Result<Message, String> {
             }
             Ok(messages.pop().unwrap())
         },
-        None => return Err("no messages in response".to_string())
+        None => Err("no messages in response".to_string())
     }
 }
 
 async fn send_message(msg: &str, topic: &str, channel_id: u64) -> Result<(), String> {
     let mut id = "[".to_string();
     id.push_str(&channel_id.to_string());
-    id.push_str("]");
+    id.push(']');
 
     let client = reqwest::Client::new();
     client

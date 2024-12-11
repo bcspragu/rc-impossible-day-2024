@@ -1,7 +1,7 @@
 use redb::{Database, ReadableTable, TableDefinition};
 use std::env;
 use std::sync::Arc;
-use zulip::{ListenType, EventType, Message, SendMessage};
+use zulip::{EventType, ListenType, Message, SendMessage};
 
 mod bloggen;
 mod zulip;
@@ -18,9 +18,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mention_db = Arc::clone(&db);
     let update_db = Arc::clone(&db);
 
+    // Make sure all the tables exist first
+    {
+        let txn = db.begin_write()?;
+        txn.open_table(USER_ID_TO_SUBDOMAIN_TABLE)?;
+        txn.open_table(SUBDOMAIN_TO_USER_ID_TABLE)?;
+        txn.open_table(USER_ID_TO_POST_IDS_TABLE)?;
+        txn.open_table(POST_ID_TO_POST_TABLE)?;
+    }
+
     let dm_handle = tokio::spawn(async move {
         zulip::call_on_each_message(ListenType::DM, EventType::Message, |msg| {
-            let response_msg = match create_blog(&dm_db, &msg) {
+            let response_msg = match create_blog(&dm_db, msg) {
                 Ok(subdomain) => &format!(
                     "Blog created successfully! You can access your beautiful new blog at https://{}.hypertxt.io",
                     subdomain
@@ -28,10 +37,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => &format!("Uh oh, something went wrong. Error: {:?}", e),
             };
             println!("Response {}", response_msg);
-            return Some(SendMessage {
+            Some(SendMessage {
                 msg_type: zulip::SendMessageType::Direct(msg.sender_id),
                 msg: response_msg.to_string(),
-            });
+            })
         })
         .await
         .unwrap();
@@ -39,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mention_handle = tokio::spawn(async move {
         zulip::call_on_each_message(ListenType::Mention, EventType::Message, |msg| {
-            let response_msg = match add_post(&mention_db, &msg) {
+            let response_msg = match add_post(&mention_db, msg) {
                 Ok(subdomain) => &format!(
                     "Post published successfully! You can view it at https://{}.hypertxt.io",
                     subdomain
@@ -53,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     msg: response_msg.to_string(),
                 });
             }
-            return None;
+            None
         })
         .await
         .unwrap();
@@ -61,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let update_handle = tokio::spawn(async move {
         zulip::call_on_each_message(ListenType::Mention, EventType::UpdateMessage, |msg| {
-            let response_msg = match add_post(&update_db, &msg) {
+            let response_msg = match add_post(&update_db, msg) {
                 Ok(subdomain) => &format!(
                     "Post edited successfully! You can view it at https://{}.hypertxt.io",
                     subdomain
@@ -75,13 +84,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     msg: response_msg.to_string(),
                 });
             }
-            return None;
+            None
         })
         .await
         .unwrap();
     });
 
-    futures::future::join_all([dm_handle, mention_handle]).await;
+    futures::future::join_all([dm_handle, mention_handle, update_handle]).await;
 
     Ok(())
 }
