@@ -97,11 +97,15 @@ fn find_title(msg: &str) -> (Option<&str>, Option<usize>) {
     (None, None)
 }
 
-fn todays_date(timestamp: u64) -> String {
+fn todays_date(timestamp: u64, rfc3339: bool) -> String {
     let ts = DateTime::from_timestamp(timestamp as i64, 0).unwrap();
     let timezone: Tz = "America/New_York".parse().unwrap();
     let local_time: DateTime<Tz> = ts.with_timezone(&timezone);
-    local_time.format("%Y-%m-%d").to_string()
+    if rfc3339 {
+        local_time.to_rfc3339()
+    } else {
+        local_time.format("%Y-%m-%d").to_string()
+    }
 }
 
 pub fn add_post(
@@ -116,7 +120,7 @@ pub fn add_post(
 
     let post_title = match post_title {
         Some(v) => v.to_string(),
-        None => todays_date(timestamp),
+        None => todays_date(timestamp, false),
     };
 
     let post_markdown = match line_to_remove {
@@ -152,6 +156,7 @@ pub fn add_post(
 
     let mut context = tera::Context::new();
     context.insert("post_title", &post_title);
+    context.insert("post_date", &todays_date(timestamp, true));
     context.insert("post_markdown", &post_markdown);
 
     let root = env::var("BLOG_ROOT").unwrap(); // Something like path/to/blogs/
