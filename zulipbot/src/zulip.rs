@@ -289,3 +289,19 @@ async fn send_message(msg: &str, topic: &str, channel_id: u64) -> Result<(), Str
 
     Ok(())
 }
+
+pub fn download_image(path: &str, dst: &str) -> Result<(), String> {
+    /*
+    Request:
+    Make sure to add credentials! See above
+    GET /api/v1/user_uploads/../.../IMG_....jpeg
+
+    Shape of response:
+    {
+      "result": "success",
+      "msg": "",
+      "url": "/user_uploads/temporary/.../IMG_....jpeg"
+    }
+    */
+    Err("TODO(russell): Implement!".to_string())
+}

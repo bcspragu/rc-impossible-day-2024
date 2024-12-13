@@ -11,6 +11,9 @@ use std::{
 };
 use tera::Tera;
 
+// TODO(russell): Use this, e.g. zulip::download_image
+use crate::zulip;
+
 pub fn parse_metadata(md: &str) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     let mut m: HashMap<String, String> = HashMap::new();
     for line in md.lines() {
@@ -133,6 +136,12 @@ pub fn add_post(
         }
         None => raw_msg,
     };
+
+    // TODO(russell): Implement this
+    // 1. Extract image URLs for /user_uploads/
+    // 2. Download /user_uploads/ images using API
+    //   - Write them to STATIC_ROOT minus /user_blogs + /user_uploads
+    // zulip::download_image
 
     let tera = Tera::new(
         Path::new(&env::var("TEMPLATES_ROOT").unwrap())
