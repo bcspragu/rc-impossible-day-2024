@@ -4,6 +4,13 @@ use serde::Deserialize;
 use tokio::time;
 
 #[derive(Debug, Deserialize)]
+struct DownloadImageResponse {
+    result: String,
+    msg: Option<String>,
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GetEventsResponse {
     events: Option<Vec<Event>>,
 
@@ -290,7 +297,7 @@ async fn send_message(msg: &str, topic: &str, channel_id: u64) -> Result<(), Str
     Ok(())
 }
 
-pub fn download_image(path: &str, dst: &str) -> Result<(), String> {
+pub async fn download_image(path: &str, dst: &str) -> Result<(), String> {
     /*
     Request:
     Make sure to add credentials! See above
@@ -303,5 +310,51 @@ pub fn download_image(path: &str, dst: &str) -> Result<(), String> {
       "url": "/user_uploads/temporary/.../IMG_....jpeg"
     }
     */
-    Err("TODO(russell): Implement!".to_string())
+
+    // parse 'path' to fit user_uploads url
+    // how does the img show up in the msg, 
+    // and how must it be formatted?
+    // path in msg parsed as: 
+    // [*.jpg|png](/user_uploads/.../.../*.jpg|png)
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("https://recurse.zulipchat.com/api/v1{path}"))
+        .basic_auth(
+            "hypertxt-bot@recurse.zulipchat.com",
+            Some(env::var("BOT_PASSWORD").unwrap_or_default()),
+        )
+        .send()
+        .await
+        .map_err(|e| format!("failed to get image url: {:?}", e))?
+        .json::<DownloadImageResponse>()
+        .await
+        .map_err(|e| format!("failed to JSON format download image response: {:?}", e))?;
+    
+    if response.result != "success" {
+        return Err(format!(
+            "got an error downloading file: {:?} {:?}",
+            response.msg, response.url
+        )
+        .into());
+    }
+
+    // use reqwest to get bytes of response in url
+    // passed by user uploads link
+    // use image library
+    // set path by using io library
+    let url = response.url.unwrap();
+
+    // get image from link as bytes
+    // TODO: save unpacked bytes to STATIC_ROOT
+    // extract name from url using regex?!
+    // or have it passed by dst in fn sig?
+    let image = client
+        .get(format!("https://recurse.zulipchat.com/{url}"))
+        .send() 
+        .await
+        .unwrap()
+        .bytes();
+    
+    Ok(())
 }
