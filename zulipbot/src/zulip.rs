@@ -35,7 +35,7 @@ pub struct Event {
     pub message_id: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Message {
     pub content: String,
     pub id: u64,
@@ -56,13 +56,14 @@ pub struct SendMessage {
     pub msg: String,
 }
 
-pub async fn call_on_each_message<F>(
+pub async fn call_on_each_message<F, Fut>(
     listen_type: ListenType,
     event_type: EventType,
     mut callback: F,
 ) -> Result<(), String>
 where
-    F: FnMut(&Message) -> Option<SendMessage>,
+    F: FnMut(Message) -> Fut,
+    Fut: std::future::Future<Output = Option<SendMessage>>,
 {
     let queue_id = register_event_queue(listen_type, event_type).await.unwrap();
 
@@ -102,7 +103,7 @@ where
                 // Ignore DMs sent by Blog Bot
                 continue;
             }
-            let send_msg = callback(msg);
+            let send_msg = callback(msg.clone()).await;
 
             if let Some(sm) = send_msg {
                 match sm.msg_type {
@@ -298,63 +299,50 @@ async fn send_message(msg: &str, topic: &str, channel_id: u64) -> Result<(), Str
 }
 
 pub async fn download_image(path: &str, dst: &str) -> Result<(), String> {
-    /*
-    Request:
-    Make sure to add credentials! See above
-    GET /api/v1/user_uploads/../.../IMG_....jpeg
-
-    Shape of response:
-    {
-      "result": "success",
-      "msg": "",
-      "url": "/user_uploads/temporary/.../IMG_....jpeg"
-    }
-    */
-
-    // parse 'path' to fit user_uploads url
-    // how does the img show up in the msg, 
-    // and how must it be formatted?
-    // path in msg parsed as: 
-    // [*.jpg|png](/user_uploads/.../.../*.jpg|png)
+    use futures::StreamExt;
+    use tokio::io::AsyncWriteExt;
 
     let client = reqwest::Client::new();
+
+    // Construct the full URL
+    let url = format!("https://recurse.zulipchat.com{}", path);
+
+    // Make the GET request with authentication
     let response = client
-        .get(format!("https://recurse.zulipchat.com/api/v1{path}"))
+        .get(&url)
         .basic_auth(
             "hypertxt-bot@recurse.zulipchat.com",
             Some(env::var("BOT_PASSWORD").unwrap_or_default()),
         )
         .send()
         .await
-        .map_err(|e| format!("failed to get image url: {:?}", e))?
-        .json::<DownloadImageResponse>()
-        .await
-        .map_err(|e| format!("failed to JSON format download image response: {:?}", e))?;
-    
-    if response.result != "success" {
+        .map_err(|e| format!("failed to download image: {:?}", e))?;
+
+    // Check if the request was successful
+    if !response.status().is_success() {
         return Err(format!(
-            "got an error downloading file: {:?} {:?}",
-            response.msg, response.url
-        )
-        .into());
+            "failed to download image, status: {}",
+            response.status()
+        ));
     }
 
-    // use reqwest to get bytes of response in url
-    // passed by user uploads link
-    // use image library
-    // set path by using io library
-    let url = response.url.unwrap();
-
-    // get image from link as bytes
-    // TODO: save unpacked bytes to STATIC_ROOT
-    // extract name from url using regex?!
-    // or have it passed by dst in fn sig?
-    let image = client
-        .get(format!("https://recurse.zulipchat.com/{url}"))
-        .send() 
+    // Create the destination file
+    let mut file = tokio::fs::File::create(dst)
         .await
-        .unwrap()
-        .bytes();
-    
+        .map_err(|e| format!("failed to create file {}: {:?}", dst, e))?;
+
+    // Stream the response body directly to the file
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("failed to read chunk: {:?}", e))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("failed to write chunk to file: {:?}", e))?;
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| format!("failed to flush file: {:?}", e))?;
+
     Ok(())
 }

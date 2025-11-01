@@ -29,18 +29,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let dm_handle = tokio::spawn(async move {
         zulip::call_on_each_message(ListenType::DM, EventType::Message, |msg| {
-            let response_msg = match create_blog(&dm_db, msg) {
-                Ok(subdomain) => &format!(
+            let db = dm_db.clone();
+            async move {
+            let response_msg = match create_blog(&db, &msg) {
+                Ok(subdomain) => format!(
                     "Blog created successfully! You can access your beautiful new blog at https://{}.hypertxt.io",
                     subdomain
                 ),
-                Err(e) => &format!("Uh oh, something went wrong. Error: {:?}", e),
+                Err(e) => format!("Uh oh, something went wrong. Error: {:?}", e),
             };
             println!("Response {}", response_msg);
             Some(SendMessage {
                 msg_type: zulip::SendMessageType::Direct(msg.sender_id),
-                msg: response_msg.to_string(),
+                msg: response_msg,
             })
+            }
         })
         .await
         .unwrap();
@@ -48,21 +51,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mention_handle = tokio::spawn(async move {
         zulip::call_on_each_message(ListenType::Mention, EventType::Message, |msg| {
-            let response_msg = match add_post(&mention_db, msg) {
-                Ok(subdomain) => &format!(
+            let db = mention_db.clone();
+            async move {
+            let response_msg = match add_post(&db, &msg).await {
+                Ok(subdomain) => format!(
                     "Post published successfully! You can view it at https://{}.hypertxt.io",
                     subdomain
                 ),
-                Err(e) => &format!("Uh oh, something went wrong. Error: {:?}", e),
+                Err(e) => format!("Uh oh, something went wrong. Error: {:?}", e),
             };
             println!("Response {}", response_msg);
             if let Some(stream_id) = msg.stream_id {
                 return Some(SendMessage {
                     msg_type: zulip::SendMessageType::Channel(msg.subject.clone(), stream_id),
-                    msg: response_msg.to_string(),
+                    msg: response_msg,
                 });
             }
             None
+            }
         })
         .await
         .unwrap();
@@ -70,21 +76,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let update_handle = tokio::spawn(async move {
         zulip::call_on_each_message(ListenType::Mention, EventType::UpdateMessage, |msg| {
-            let response_msg = match add_post(&update_db, msg) {
-                Ok(subdomain) => &format!(
+            let db = update_db.clone();
+            async move {
+            let response_msg = match add_post(&db, &msg).await {
+                Ok(subdomain) => format!(
                     "Post edited successfully! You can view it at https://{}.hypertxt.io",
                     subdomain
                 ),
-                Err(e) => &format!("Uh oh, something went wrong. Error: {:?}", e),
+                Err(e) => format!("Uh oh, something went wrong. Error: {:?}", e),
             };
             println!("Response {}", response_msg);
             if let Some(stream_id) = msg.stream_id {
                 return Some(SendMessage {
                     msg_type: zulip::SendMessageType::Channel(msg.subject.clone(), stream_id),
-                    msg: response_msg.to_string(),
+                    msg: response_msg,
                 });
             }
             None
+            }
         })
         .await
         .unwrap();
@@ -151,7 +160,7 @@ fn create_blog(db: &Database, msg: &Message) -> Result<String, Box<dyn std::erro
     Ok(subdomain)
 }
 
-fn add_post(db: &Database, msg: &Message) -> Result<String, Box<dyn std::error::Error>> {
+async fn add_post(db: &Database, msg: &Message) -> Result<String, Box<dyn std::error::Error>> {
     // assuming a blog is created, publish a post!
     // in markdown at file: user_content/{sender_id}/{id}.md
     // takes post_title from top of md file, demarcated by #
@@ -184,7 +193,7 @@ fn add_post(db: &Database, msg: &Message) -> Result<String, Box<dyn std::error::
     };
     txn.commit()?;
 
-    bloggen::add_post(&subdomain, message_id, &msg.content, msg.timestamp)?;
+    bloggen::add_post(&subdomain, message_id, &msg.content, msg.timestamp).await?;
 
     Ok(subdomain)
 }
