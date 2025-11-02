@@ -31,18 +31,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         zulip::call_on_each_message(ListenType::DM, EventType::Message, |msg| {
             let db = dm_db.clone();
             async move {
-            let response_msg = match create_blog(&db, &msg) {
-                Ok(subdomain) => format!(
-                    "Blog created successfully! You can access your beautiful new blog at https://{}.hypertxt.io",
-                    subdomain
-                ),
-                Err(e) => format!("Uh oh, something went wrong. Error: {:?}", e),
-            };
-            println!("Response {}", response_msg);
-            Some(SendMessage {
-                msg_type: zulip::SendMessageType::Direct(msg.sender_id),
-                msg: response_msg,
-            })
+                match msg.content.as_str() {
+                    "regenerate" => {
+                        let response_msg = match refresh_all_posts(&db, &msg).await {
+                            Ok(v) => v,
+                            Err(e) => format!("Uh oh, something went wrong. Error: {:?}", e),
+                        };
+                        println!("Regen response {}", response_msg);
+                        Some(SendMessage {
+                            msg_type: zulip::SendMessageType::Direct(msg.sender_id),
+                            msg: response_msg,
+                        })
+
+                    }
+                    _ => {
+                        let response_msg = match create_blog(&db, &msg) {
+                            Ok(subdomain) => format!(
+                                "Blog created successfully! You can access your beautiful new blog at https://{}.hypertxt.io",
+                                subdomain
+                            ),
+                            Err(e) => format!("Uh oh, something went wrong. Error: {:?}", e),
+                        };
+                        println!("Create response {}", response_msg);
+                        Some(SendMessage {
+                            msg_type: zulip::SendMessageType::Direct(msg.sender_id),
+                            msg: response_msg,
+                        })
+                }
+            }
             }
         })
         .await
@@ -53,21 +69,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         zulip::call_on_each_message(ListenType::Mention, EventType::Message, |msg| {
             let db = mention_db.clone();
             async move {
-            let response_msg = match add_post(&db, &msg).await {
-                Ok(subdomain) => format!(
-                    "Post published successfully! You can view it at https://{}.hypertxt.io",
-                    subdomain
-                ),
-                Err(e) => format!("Uh oh, something went wrong. Error: {:?}", e),
-            };
-            println!("Response {}", response_msg);
-            if let Some(stream_id) = msg.stream_id {
-                return Some(SendMessage {
-                    msg_type: zulip::SendMessageType::Channel(msg.subject.clone(), stream_id),
-                    msg: response_msg,
-                });
-            }
-            None
+                let response_msg = match add_post(&db, &msg).await {
+                    Ok(subdomain) => format!(
+                        "Post published successfully! You can view it at https://{}.hypertxt.io",
+                        subdomain
+                    ),
+                    Err(e) => format!("Uh oh, something went wrong. Error: {:?}", e),
+                };
+                println!("Response {}", response_msg);
+                if let Some(stream_id) = msg.stream_id {
+                    return Some(SendMessage {
+                        msg_type: zulip::SendMessageType::Channel(msg.subject.clone(), stream_id),
+                        msg: response_msg,
+                    });
+                }
+                None
             }
         })
         .await
@@ -78,21 +94,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         zulip::call_on_each_message(ListenType::Mention, EventType::UpdateMessage, |msg| {
             let db = update_db.clone();
             async move {
-            let response_msg = match add_post(&db, &msg).await {
-                Ok(subdomain) => format!(
-                    "Post edited successfully! You can view it at https://{}.hypertxt.io",
-                    subdomain
-                ),
-                Err(e) => format!("Uh oh, something went wrong. Error: {:?}", e),
-            };
-            println!("Response {}", response_msg);
-            if let Some(stream_id) = msg.stream_id {
-                return Some(SendMessage {
-                    msg_type: zulip::SendMessageType::Channel(msg.subject.clone(), stream_id),
-                    msg: response_msg,
-                });
-            }
-            None
+                let response_msg = match add_post(&db, &msg).await {
+                    Ok(subdomain) => format!(
+                        "Post edited successfully! You can view it at https://{}.hypertxt.io",
+                        subdomain
+                    ),
+                    Err(e) => format!("Uh oh, something went wrong. Error: {:?}", e),
+                };
+                println!("Response {}", response_msg);
+                if let Some(stream_id) = msg.stream_id {
+                    return Some(SendMessage {
+                        msg_type: zulip::SendMessageType::Channel(msg.subject.clone(), stream_id),
+                        msg: response_msg,
+                    });
+                }
+                None
             }
         })
         .await
@@ -111,6 +127,38 @@ const SUBDOMAIN_TO_USER_ID_TABLE: TableDefinition<&str, u64> =
 const USER_ID_TO_POST_IDS_TABLE: TableDefinition<u64, Vec<u64>> =
     TableDefinition::new("user_id_to_post_ids");
 const POST_ID_TO_POST_TABLE: TableDefinition<u64, &str> = TableDefinition::new("post_id_to_post");
+
+async fn refresh_all_posts(
+    db: &Database,
+    msg: &Message,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let user_id = msg.sender_id;
+
+    let txn = db.begin_read()?;
+
+    let (post_ids, subdomain) = {
+        let posts_tbl = txn.open_table(USER_ID_TO_POST_IDS_TABLE)?;
+        let post_ids = {
+            match posts_tbl.get(&user_id)? {
+                Some(v) => v.value(),
+                None => vec![],
+            }
+        };
+
+        let subdomain_tbl = txn.open_table(USER_ID_TO_SUBDOMAIN_TABLE)?;
+        let subdomain = {
+            match subdomain_tbl.get(&user_id)? {
+                Some(v) => String::from(v.value()),
+                None => "".to_string(),
+            }
+        };
+        (post_ids, subdomain)
+    };
+
+    bloggen::refresh_all_posts(&subdomain, post_ids).await?;
+
+    Ok("Blog regenerated successfully!".to_string())
+}
 
 fn create_blog(db: &Database, msg: &Message) -> Result<String, Box<dyn std::error::Error>> {
     let user_id = msg.sender_id;

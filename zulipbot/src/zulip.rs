@@ -1,14 +1,7 @@
-use std::{env, time::Duration};
+use std::{env, path::Path, time::Duration};
 
 use serde::Deserialize;
 use tokio::time;
-
-#[derive(Debug, Deserialize)]
-struct DownloadImageResponse {
-    result: String,
-    msg: Option<String>,
-    url: Option<String>,
-}
 
 #[derive(Debug, Deserialize)]
 struct GetEventsResponse {
@@ -25,6 +18,12 @@ struct GetEventsResponse {
 #[derive(Debug, Deserialize)]
 struct GetMessagesResponse {
     messages: Option<Vec<Message>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetImageResponse {
+    result: String,
+    url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,7 +242,7 @@ async fn send_direct_message(msg: &str, user_id: u64) -> Result<(), String> {
     Ok(())
 }
 
-async fn get_message(msg_id: u64) -> Result<Message, String> {
+pub async fn get_message(msg_id: u64) -> Result<Message, String> {
     let client = reqwest::Client::new();
     let response = client
         .get("https://recurse.zulipchat.com/api/v1/messages")
@@ -302,10 +301,17 @@ pub async fn download_image(path: &str, dst: &str) -> Result<(), String> {
     use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
 
+    if Path::new(dst).exists() {
+        println!(
+            "Skipping download for {} as we already have it locally",
+            path
+        );
+    }
+
     let client = reqwest::Client::new();
 
     // Construct the full URL
-    let url = format!("https://recurse.zulipchat.com{}", path);
+    let url = format!("https://recurse.zulipchat.com/api/v1{}", path);
 
     // Make the GET request with authentication
     let response = client
@@ -316,9 +322,26 @@ pub async fn download_image(path: &str, dst: &str) -> Result<(), String> {
         )
         .send()
         .await
+        .map_err(|e| format!("failed to get image URL for download: {:?}", e))?
+        .json::<GetImageResponse>()
+        .await
+        .map_err(|e| format!("failed to JSON format get image response: {:?}", e))?;
+
+    if response.result != "success" {
+        return Err(format!("unexpected response result {}", response.result));
+    }
+
+    let response = client
+        .get(format!("https://recurse.zulipchat.com{}", response.url))
+        .basic_auth(
+            "hypertxt-bot@recurse.zulipchat.com",
+            Some(env::var("BOT_PASSWORD").unwrap_or_default()),
+        )
+        .send()
+        .await
         .map_err(|e| format!("failed to download image: {:?}", e))?;
 
-    // Check if the request was successful
+    // Check if the download request was successful
     if !response.status().is_success() {
         return Err(format!(
             "failed to download image, status: {}",

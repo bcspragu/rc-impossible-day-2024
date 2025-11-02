@@ -11,7 +11,6 @@ use std::{
 };
 use tera::Tera;
 
-// TODO(russell): Use this, e.g. zulip::download_image
 use crate::zulip;
 
 pub fn parse_metadata(md: &str) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
@@ -70,11 +69,13 @@ pub fn create_blog(m: HashMap<String, String>) -> Result<(), Box<dyn std::error:
     // Write the templated config file
     let config_file = File::create(blog_dir.join("config.toml"))?;
     tera.render_to("config.toml", &context, &config_file)?;
+    let content_index_file = File::create(blog_dir.join("content/_index.md"))?;
+    tera.render_to("_index.md", &tera::Context::new(), &content_index_file)?;
 
-    let out_dir = match env::var("STATIC_ROOT") {
-        Ok(v) => Some(Path::new(&v).join(user_domain)),
-        Err(_) => None,
-    };
+    let static_root =
+        env::var("STATIC_ROOT").map_err(|e| format!("failed to get static root: {:?}", e))?;
+
+    let out_dir = Path::new(&static_root).join(user_domain);
 
     run_zola(blog_dir, out_dir)?;
 
@@ -101,19 +102,21 @@ fn todays_date(timestamp: u64, rfc3339: bool) -> String {
     let ts = DateTime::from_timestamp(timestamp as i64, 0).unwrap();
     let timezone: Tz = "America/New_York".parse().unwrap();
     let local_time: DateTime<Tz> = ts.with_timezone(&timezone);
+
     if rfc3339 {
-        local_time.to_rfc3339()
+        local_time
+            .to_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     } else {
         local_time.format("%Y-%m-%d").to_string()
     }
 }
 
+// The idea is that posts can contain uploaded images, which start with
+// `/user_uploads/...`. We want to (heuristically) find all those URLs so that
+// we can download them and serve them on the blog.
 fn extract_user_upload_urls(markdown: &str) -> Vec<String> {
     let mut urls = Vec::new();
-
-    // Match markdown images: ![alt text](/user_uploads/...)
-    // Match markdown links: [text](/user_uploads/...)
-    // Match HTML img tags: <img src="/user_uploads/...">
 
     for line in markdown.lines() {
         let mut remaining = line;
@@ -135,24 +138,54 @@ fn extract_user_upload_urls(markdown: &str) -> Vec<String> {
     urls
 }
 
-pub async fn add_post(
+pub async fn refresh_all_posts(
     user_subdomain: &str,
-    post_id: u64,
-    raw_msg: &str,
-    timestamp: u64,
+    post_ids: Vec<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let raw_msg = raw_msg.replace("@**Blog Bot (HyperTXT)**", "");
+    let root = env::var("BLOG_ROOT").unwrap(); // Something like path/to/blogs/
+    let blog_dir = Path::new(&root).join(user_subdomain);
+    let static_root =
+        env::var("STATIC_ROOT").map_err(|e| format!("failed to get static root: {:?}", e))?;
 
-    let (post_title, line_to_remove) = find_title(&raw_msg);
+    // TODO: Probably update this to also regenerate other files, like the config.toml + the content/_index.md
 
-    let post_title = match post_title {
-        Some(v) => v.to_string(),
-        None => todays_date(timestamp, false),
-    };
+    println!("Refreshing {} posts", post_ids.len());
+    for post_id in post_ids {
+        let msg = zulip::get_message(post_id).await?;
+        let parsed_message = parse_raw_message(&msg.content, msg.timestamp);
+        download_images(parsed_message.image_urls, &static_root).await?;
+        write_post(
+            &blog_dir,
+            PostToWrite {
+                title: parsed_message.title,
+                timestamp: msg.timestamp,
+                body: parsed_message.body,
+                post_id,
+            },
+        )?;
+    }
+
+    let out_dir = Path::new(&static_root).join(user_subdomain);
+
+    run_zola(blog_dir, out_dir)?;
+
+    Ok(())
+}
+
+struct ParsedMessage {
+    title: String,
+    body: String,
+    image_urls: Vec<String>,
+}
+
+fn parse_raw_message(raw_msg: &str, timestamp: u64) -> ParsedMessage {
+    let msg = raw_msg.replace("@**Blog Bot (HyperTXT)**", "");
+
+    let (post_title, line_to_remove) = find_title(&msg);
 
     let post_markdown = match line_to_remove {
         Some(ltr) => {
-            let val = raw_msg
+            let val = msg
                 .lines()
                 .enumerate()
                 .filter(|(idx, _)| *idx != ltr)
@@ -165,36 +198,96 @@ pub async fn add_post(
                 });
             val.trim().to_owned()
         }
-        None => raw_msg,
+        None => msg.clone(),
     };
 
-    // Extract and download images from /user_uploads/
-    let static_root = env::var("STATIC_ROOT").ok();
-    if let Some(static_root_path) = &static_root {
-        // Find all /user_uploads/ URLs in the markdown
-        let image_urls = extract_user_upload_urls(&post_markdown);
+    // TODO: Zulip messages only inline the images as links, we should
+    // update this to automatically turn them into Markdown images too.
+    // E.g. ![text](path/to/image) insteaad of [text](path/to/image)
+    let image_urls = extract_user_upload_urls(&post_markdown);
 
-        for url in image_urls {
-            // Create the destination path: STATIC_ROOT/../user_uploads/...
-            // The URL is like /user_uploads/13/SJXAkls4A6mqvoVyWpeciPlO/DSC_0583.png
-            let relative_path = url.trim_start_matches('/');
-            let dst_path = Path::new(static_root_path)
-                .parent()
-                .ok_or("STATIC_ROOT has no parent directory")?
-                .join(relative_path);
+    ParsedMessage {
+        title: post_title
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| todays_date(timestamp, false)),
+        body: post_markdown,
+        image_urls,
+    }
+}
 
-            // Create parent directories if they don't exist
-            if let Some(parent) = dst_path.parent() {
-                fs::create_dir_all(parent).ok();
-            }
+pub async fn add_post(
+    user_subdomain: &str,
+    post_id: u64,
+    raw_msg: &str,
+    timestamp: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let msg = parse_raw_message(raw_msg, timestamp);
 
-            // Download the image
-            if let Err(e) = zulip::download_image(&url, dst_path.to_str().unwrap()).await {
-                eprintln!("Failed to download image {}: {}", url, e);
-            }
+    let static_root =
+        env::var("STATIC_ROOT").map_err(|e| format!("failed to get static root: {:?}", e))?;
+
+    download_images(msg.image_urls, &static_root).await?;
+
+    let root = env::var("BLOG_ROOT").unwrap(); // Something like path/to/blogs/
+    let blog_dir = Path::new(&root).join(user_subdomain);
+
+    write_post(
+        &blog_dir,
+        PostToWrite {
+            title: msg.title,
+            timestamp,
+            body: msg.body,
+            post_id,
+        },
+    )?;
+
+    let out_dir = Path::new(&static_root).join(user_subdomain);
+
+    run_zola(blog_dir, out_dir)?;
+    Ok(())
+}
+
+async fn download_images(
+    image_urls: Vec<String>,
+    static_root: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for url in image_urls {
+        // Create the destination path: STATIC_ROOT/../user_uploads/...
+        // The URL is like /user_uploads/13/SJXAkls4A6mqvoVyWpeciPlO/DSC_0583.png
+        let relative_path = url.trim_start_matches('/');
+        let dst_path = Path::new(static_root)
+            .parent()
+            .ok_or("STATIC_ROOT has no parent directory")?
+            .join(relative_path);
+
+        // Create parent directories if they don't exist
+        if let Some(parent) = dst_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "failed to create parent dirs for image {:?}: {:?}",
+                    parent, e
+                )
+            })?;
+        }
+
+        // Download the image
+        println!("Downloading image {}", url);
+        if let Err(e) = zulip::download_image(&url, dst_path.to_str().unwrap()).await {
+            eprintln!("Failed to download image {}: {}", url, e);
         }
     }
 
+    Ok(())
+}
+
+struct PostToWrite {
+    title: String,
+    timestamp: u64,
+    body: String,
+    post_id: u64,
+}
+
+fn write_post(blog_dir: &Path, post: PostToWrite) -> Result<(), Box<dyn std::error::Error>> {
     let tera = Tera::new(
         Path::new(&env::var("TEMPLATES_ROOT").unwrap())
             .join("*.md")
@@ -203,37 +296,25 @@ pub async fn add_post(
     )?;
 
     let mut context = tera::Context::new();
-    context.insert("post_title", &post_title);
-    context.insert("post_date", &todays_date(timestamp, true));
-    context.insert("post_markdown", &post_markdown);
+    context.insert("post_title", &post.title);
+    context.insert("post_date", &todays_date(post.timestamp, true));
+    context.insert("post_markdown", &post.body);
 
-    let root = env::var("BLOG_ROOT").unwrap(); // Something like path/to/blogs/
-    let blog_dir = Path::new(&root).join(user_subdomain);
-
-    let post_file = File::create(blog_dir.join("content").join(post_id.to_string() + ".md"))?;
+    let post_file = File::create(
+        blog_dir
+            .join("content")
+            .join(post.post_id.to_string() + ".md"),
+    )?;
     tera.render_to("post.md", &context, &post_file).unwrap();
-
-    let out_dir = match env::var("STATIC_ROOT") {
-        Ok(v) => Some(Path::new(&v).join(user_subdomain)),
-        Err(_) => None,
-    };
-
-    run_zola(blog_dir, out_dir)?;
     Ok(())
 }
 
-fn run_zola<P: AsRef<Path>, Q: AsRef<Path>>(
-    zola_dir: P,
-    out_dir: Option<Q>,
-) -> Result<(), Box<dyn Error>> {
+fn run_zola<P: AsRef<Path>, Q: AsRef<Path>>(zola_dir: P, out_dir: Q) -> Result<(), Box<dyn Error>> {
     let mut build_cmd = Command::new("zola");
     build_cmd.arg("build");
     build_cmd.arg("--force");
     build_cmd.current_dir(zola_dir);
-    if let Some(out_dir) = out_dir {
-        build_cmd.args(["--output-dir", out_dir.as_ref().to_str().unwrap()]);
-        println!("output dir set to {}", out_dir.as_ref().to_str().unwrap());
-    }
+    build_cmd.args(["--output-dir", out_dir.as_ref().to_str().unwrap()]);
     let status = build_cmd.status()?;
 
     if !status.success() {
@@ -251,15 +332,10 @@ mod tests {
         let markdown = "![alt text](/user_uploads/13/SJXAkls4A6mqvoVyWpeciPlO/DSC_0583.png)";
         let urls = extract_user_upload_urls(markdown);
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0], "/user_uploads/13/SJXAkls4A6mqvoVyWpeciPlO/DSC_0583.png");
-    }
-
-    #[test]
-    fn test_extract_markdown_link_single_url() {
-        let markdown = "[click here](/user_uploads/13/abc123/file.pdf)";
-        let urls = extract_user_upload_urls(markdown);
-        assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0], "/user_uploads/13/abc123/file.pdf");
+        assert_eq!(
+            urls[0],
+            "/user_uploads/13/SJXAkls4A6mqvoVyWpeciPlO/DSC_0583.png"
+        );
     }
 
     #[test]
@@ -272,7 +348,8 @@ mod tests {
 
     #[test]
     fn test_extract_multiple_urls_single_line() {
-        let markdown = "![img1](/user_uploads/1/a/img1.png) and ![img2](/user_uploads/2/b/img2.jpg)";
+        let markdown =
+            "![img1](/user_uploads/1/a/img1.png) and ![img2](/user_uploads/2/b/img2.jpg)";
         let urls = extract_user_upload_urls(markdown);
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "/user_uploads/1/a/img1.png");
@@ -286,9 +363,9 @@ mod tests {
 
 Here is an image: ![photo](/user_uploads/13/abc/photo.png)
 
-And here is a link: [document](/user_uploads/14/def/doc.pdf)
+And here is another one: [photo 2](/user_uploads/14/def/p2.jpeg)
 
-And another image: <img src="/user_uploads/15/ghi/banner.jpg">
+And a third: <img src="/user_uploads/15/ghi/banner.jpg">
 "#;
         let urls = extract_user_upload_urls(markdown);
         assert_eq!(urls.len(), 3);
@@ -334,7 +411,10 @@ Also an external ![image](https://example.com/pic.jpg) and an internal ![image](
         let markdown = "![image](/user_uploads/13/SJXAkls4A6mqvoVyWpeciPlO/DSC_0583-edited.png)";
         let urls = extract_user_upload_urls(markdown);
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0], "/user_uploads/13/SJXAkls4A6mqvoVyWpeciPlO/DSC_0583-edited.png");
+        assert_eq!(
+            urls[0],
+            "/user_uploads/13/SJXAkls4A6mqvoVyWpeciPlO/DSC_0583-edited.png"
+        );
     }
 
     #[test]
